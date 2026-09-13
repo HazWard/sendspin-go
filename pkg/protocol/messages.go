@@ -84,16 +84,36 @@ type ServerHello struct {
 	ConnectionReason string   `json:"connection_reason"` // "discovery" or "playback"
 }
 
-// ClientStateMessage is sent as client/state with role-specific objects
+// ClientStateMessage is sent as client/state with role-specific objects.
+// Per spec every message carries top-level available, and includes the
+// full state of each role object it carries (omitted objects are unchanged).
 type ClientStateMessage struct {
-	Player *PlayerState `json:"player,omitempty"`
+	Available bool         `json:"available"`
+	Player    *PlayerState `json:"player,omitempty"`
 }
 
-// PlayerState reports the player's current state per spec
+// PlayerState reports the player's current state per spec (client/state
+// player object, as validated by aiosendspin's PlayerStatePayload).
+// Volume and Muted are always present: this library only builds player
+// states for clients declaring the volume/mute commands in client/hello,
+// for which the spec mandates their inclusion (notably Muted must be
+// present even when false). State is the deprecated sync marker kept for
+// pre-spec servers ("synchronized", "error", "external_source").
+//
+// SupportedCommands is state-level, where ONLY set_static_delay is valid —
+// volume/mute belong to client/hello's player support and are rejected
+// here (aiosendspin closes the connection on them). This library leaves
+// delay control to local configuration, so it reports an empty list.
 type PlayerState struct {
-	State  string `json:"state"`            // "synchronized", "error", or "external_source"
-	Volume int    `json:"volume,omitempty"` // 0-100, if volume command supported
-	Muted  bool   `json:"muted,omitempty"`  // if mute command supported
+	State  string `json:"state,omitempty"`
+	Volume int    `json:"volume"`
+	Muted  bool   `json:"muted"`
+
+	StaticDelayMs      int          `json:"static_delay_ms"`
+	RequiredLeadTimeMs int          `json:"required_lead_time_ms"`
+	MinBufferMs        int          `json:"min_buffer_ms"`
+	SupportedCommands  []string     `json:"supported_commands"`
+	Format             *AudioFormat `json:"format,omitempty"`
 }
 
 // ServerCommandMessage is sent as server/command with role-specific objects

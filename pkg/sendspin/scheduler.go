@@ -83,7 +83,18 @@ func NewScheduler(clockSync *sync.ClockSync, bufferMs int, staticDelayMs int) *S
 }
 
 func (s *Scheduler) Schedule(buf audio.Buffer) {
-	buf.PlayAt = s.clockSync.ServerToLocalTime(buf.Timestamp).Add(s.staticDelay)
+	if s.clockSync.Synced() {
+		buf.PlayAt = s.clockSync.ServerToLocalTime(buf.Timestamp).Add(s.staticDelay)
+	} else {
+		// No sync samples yet (some servers answer client/time rarely and
+		// a fresh filter has no offset): the server timestamp cannot be
+		// placed on the local clock — for monotonic-domain servers the
+		// naive mapping lands in 1970 and every chunk drops as late.
+		// Pace by arrival instead so audio still flows; placement
+		// self-corrects to true time once sync lands. Multi-room
+		// alignment is approximate until then.
+		buf.PlayAt = time.Now().Add(time.Duration(s.jitterMs) * time.Millisecond).Add(s.staticDelay)
+	}
 
 	received := s.received.Add(1) - 1
 

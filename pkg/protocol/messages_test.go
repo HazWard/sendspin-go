@@ -139,10 +139,15 @@ func TestClientHelloMarshaling(t *testing.T) {
 
 func TestClientStateMarshaling(t *testing.T) {
 	state := ClientStateMessage{
+		Available: true,
 		Player: &PlayerState{
-			State:  "synchronized",
-			Volume: 80,
-			Muted:  false,
+			State:              "synchronized",
+			Volume:             80,
+			Muted:              false,
+			StaticDelayMs:      0,
+			RequiredLeadTimeMs: 250,
+			MinBufferMs:        150,
+			SupportedCommands:  []string{},
 		},
 	}
 
@@ -154,6 +159,22 @@ func TestClientStateMarshaling(t *testing.T) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	// aiosendspin 4.x requires these keys: available at top level, and
+	// muted/timing in player even when muted is false. State-level
+	// supported_commands must NOT contain volume/mute (hello-level only).
+	for _, key := range []string{
+		`"available":true`,
+		`"muted":false`,
+		`"static_delay_ms":0`,
+		`"required_lead_time_ms":250`,
+		`"min_buffer_ms":150`,
+		`"supported_commands":[]`,
+	} {
+		if !strings.Contains(string(data), key) {
+			t.Errorf("client/state omits required %s, got: %s", key, data)
+		}
 	}
 
 	var decoded Message

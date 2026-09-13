@@ -104,6 +104,32 @@ func (cs *ClockSync) CheckQuality() Quality {
 	return cs.quality
 }
 
+// Synced reports whether at least one sync measurement has been
+// processed. Note this says nothing about accuracy: with zero samples the
+// scheduler must not interpret server timestamps as wall-clock time (see
+// ServerToLocalTime), since monotonic-domain servers would map to 1970.
+func (cs *ClockSync) Synced() bool {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+
+	return cs.filter.Synced()
+}
+
+// Reset clears all sync state: offset, drift, RTT, quality and sample
+// count. Callers use this when the clock domain changes (e.g. reconnects
+// to a different server whose epoch differs), where a stale offset would
+// mis-schedule every chunk.
+func (cs *ClockSync) Reset() {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	cs.filter.Reset()
+	cs.rtt = 0
+	cs.quality = QualityLost
+	cs.sampleCount = 0
+	cs.lastSync = time.Time{}
+}
+
 // ServerToLocalTime converts server timestamp (µs) to local wall clock time.
 func (cs *ClockSync) ServerToLocalTime(serverTime int64) time.Time {
 	cs.mu.RLock()

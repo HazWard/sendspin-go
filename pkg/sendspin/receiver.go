@@ -42,7 +42,23 @@ type ReceiverConfig struct {
 	// MaxBitDepth caps the highest BitDepth advertised to the server.  0 = no cap.
 	MaxBitDepth int
 	// ClientID is the already-resolved client_id to advertise in client/hello.
-	ClientID       string
+	ClientID string
+	// Volume is the initial volume (0-100) reported in client/state. 0 =
+	// default 100; true silence at startup should use mute instead.
+	Volume int
+	// Clock is an optional shared clock carried across reconnects. When nil
+	// NewReceiver creates a private one. Sharing matters because clock sync
+	// samples arrive slowly (some servers answer client/time rarely): a
+	// fresh filter on every reconnect may never accumulate the samples it
+	// needs before streaming starts. Only share between receivers talking
+	// to the same server — Player resets it when the address changes.
+	Clock *sync.ClockSync
+	// RequiredLeadTimeMs is the startup lead time reported in client/state
+	// (codec init, decode warmup, backend buffering). 0 = default 250.
+	RequiredLeadTimeMs int
+	// MinBufferMs is the ongoing jitter buffer reported in client/state.
+	// 0 = default to BufferMs.
+	MinBufferMs    int
 	DeviceInfo     DeviceInfo
 	DecoderFactory func(audio.Format) (decode.Decoder, error)
 	OnMetadata     func(Metadata)
@@ -51,6 +67,11 @@ type ReceiverConfig struct {
 	OnError        func(error)
 	OnCommand      func(protocol.PlayerCommand)
 }
+
+// defaultRequiredLeadTimeMs covers codec init, decode warmup and the
+// scheduler's startup buffer on a typical LAN player. Embedders with
+// measured numbers should set ReceiverConfig.RequiredLeadTimeMs.
+const defaultRequiredLeadTimeMs = 250
 
 type ReceiverStats struct {
 	Received    int64
@@ -89,6 +110,15 @@ func NewReceiver(config ReceiverConfig) (*Receiver, error) {
 	if config.BufferMs == 0 {
 		config.BufferMs = 500
 	}
+	if config.Volume == 0 {
+		config.Volume = 100
+	}
+	if config.RequiredLeadTimeMs == 0 {
+		config.RequiredLeadTimeMs = defaultRequiredLeadTimeMs
+	}
+	if config.MinBufferMs == 0 {
+		config.MinBufferMs = config.BufferMs
+	}
 	if config.BufferCapacity == 0 {
 		config.BufferCapacity = 1048576 // 1MB default
 	}
@@ -104,7 +134,10 @@ func NewReceiver(config ReceiverConfig) (*Receiver, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	clockSync := sync.NewClockSync()
+	clockSync := config.Clock
+	if clockSync == nil {
+		clockSync = sync.NewClockSync()
+	}
 
 	r := &Receiver{
 		config:     config,
@@ -117,6 +150,70 @@ func NewReceiver(config ReceiverConfig) (*Receiver, error) {
 	r.clockNow = r.clockSync.ServerMicrosNow
 
 	return r, nil
+}
+
+// playerState builds the spec player object for client/state reports.
+// StaticDelayMs feeds static_delay_ms (clamped to the spec 0-5000 range);
+// the server applies it separately from the timing hints.
+func (r *Receiver) playerState(volume int, muted bool) protocol.PlayerState {
+	delay := r.config.StaticDelayMs
+	if delay < 0 {
+		delay = 0
+	}
+	if delay > 5000 {
+		delay = 5000
+	}
+	return protocol.PlayerState{
+		State:              "synchronized",
+		Volume:             volume,
+		Muted:              muted,
+		StaticDelayMs:      delay,
+		RequiredLeadTimeMs: r.config.RequiredLeadTimeMs,
+		MinBufferMs:        r.config.MinBufferMs,
+		// State-level commands exclude volume/mute (hello-level only);
+		// remote delay control is not accepted, so this stays empty.
+		SupportedCommands: []string{},
+	}
+}
+
+// sendState reports availability with the current player object. It is a
+// no-op before Connect has established the protocol client.
+func (r *Receiver) sendState(available bool, volume int, muted bool) {
+	if r.client == nil {
+		return
+	}
+	msg := protocol.ClientStateMessage{Available: available}
+	if available {
+		ps := r.playerState(volume, muted)
+		msg.Player = &ps
+	}
+	if err := r.client.SendClientState(msg); err != nil {
+		log.Printf("failed to send client/state: %v", err)
+	}
+}
+
+// ReportVolume re-sends client/state with updated volume/mute. Callers
+// (e.g. the Player wrapper's SetVolume/Mute) invoke this whenever the
+// values change so the server display stays in sync.
+func (r *Receiver) ReportVolume(volume int, muted bool) {
+	r.sendState(true, volume, muted)
+}
+
+// ReportUnavailable tells the server this client cannot currently take
+// part in playback. The legacy external_source marker rides along for
+// pre-spec servers; spec servers key off available:false.
+func (r *Receiver) ReportUnavailable(volume int, muted bool) {
+	if r.client == nil {
+		return
+	}
+	ps := r.playerState(volume, muted)
+	ps.State = "external_source"
+	if err := r.client.SendClientState(protocol.ClientStateMessage{
+		Available: false,
+		Player:    &ps,
+	}); err != nil {
+		log.Printf("failed to send client/state: %v", err)
+	}
 }
 
 // Output returns the channel that emits decoded, time-stamped audio buffers.
@@ -221,6 +318,11 @@ func (r *Receiver) Connect() error {
 
 	if err := r.performInitialSync(); err != nil {
 		log.Printf("Initial clock sync failed: %v", err)
+		r.sendState(false, r.config.Volume, false)
+	} else {
+		// Clock converged: per spec the player may now report available,
+		// which is what lets the server start its streams.
+		r.sendState(true, r.config.Volume, false)
 	}
 
 	go r.watchConnection()

@@ -161,6 +161,12 @@ type Player struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	capsResolved bool // probe runs once at first Connect; reconnects reuse the cached caps
+	// clockSync is shared across reconnect receivers so clock sync samples
+	// accumulate instead of resetting on every drop. clockAddr records
+	// which server it belongs to; a server change resets it.
+	clockSync *sendspinsync.ClockSync
+	clockAddr string
+	clockMu   stdsync.Mutex
 }
 
 func NewPlayer(config PlayerConfig) (*Player, error) {
@@ -185,10 +191,11 @@ func NewPlayer(config PlayerConfig) (*Player, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Player{
-		config: config,
-		output: config.Output,
-		ctx:    ctx,
-		cancel: cancel,
+		config:    config,
+		output:    config.Output,
+		ctx:       ctx,
+		cancel:    cancel,
+		clockSync: sendspinsync.NewClockSync(),
 		state: PlayerState{
 			State:     "idle",
 			Volume:    config.Volume,
@@ -225,11 +232,29 @@ func (p *Player) Connect() error {
 
 func (p *Player) buildReceiver(addr string) (*Receiver, error) {
 	p.ensureCapsResolved()
+
+	// Share one clock across reconnects (see Player.clockSync), but reset
+	// it when talking to a different server: clock domains (unix vs
+	// monotonic epoch) differ per server and a stale offset would
+	// mis-schedule every chunk.
+	p.clockMu.Lock()
+	if p.clockSync == nil {
+		p.clockSync = sendspinsync.NewClockSync()
+	}
+	if p.clockAddr != addr {
+		p.clockSync.Reset()
+		p.clockAddr = addr
+	}
+	clock := p.clockSync
+	p.clockMu.Unlock()
+
 	return NewReceiver(ReceiverConfig{
 		ServerAddr:     addr,
 		PlayerName:     p.config.PlayerName,
 		BufferMs:       p.config.BufferMs,
 		StaticDelayMs:  p.config.StaticDelayMs,
+		Volume:         p.config.Volume,
+		Clock:          clock,
 		PreferredCodec: p.config.PreferredCodec,
 		BufferCapacity: p.config.BufferCapacity,
 		MaxSampleRate:  p.config.MaxSampleRate,
@@ -663,14 +688,13 @@ func (p *Player) RequestFormat(req FormatRequest) error {
 func (p *Player) EnterExternalSource() error {
 	p.stateMu.Lock()
 	r := p.receiver
+	s := p.state
 	p.stateMu.Unlock()
 
 	if r == nil || r.client == nil {
 		return fmt.Errorf("not connected")
 	}
-	if err := r.client.SendState(protocol.PlayerState{State: "external_source"}); err != nil {
-		return err
-	}
+	r.ReportUnavailable(s.Volume, s.Muted)
 	p.stateMu.Lock()
 	p.state.State = "external_source"
 	p.stateMu.Unlock()
@@ -707,14 +731,11 @@ func (p *Player) sendState() error {
 	s := p.state
 	p.stateMu.Unlock()
 
-	if r == nil || r.client == nil {
+	if r == nil {
 		return nil
 	}
-	return r.client.SendState(protocol.PlayerState{
-		State:  "synchronized",
-		Volume: s.Volume,
-		Muted:  s.Muted,
-	})
+	r.ReportVolume(s.Volume, s.Muted)
+	return nil
 }
 
 func (p *Player) notifyStateChange() {

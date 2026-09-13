@@ -10,15 +10,12 @@ import (
 	"github.com/Sendspin/sendspin-go/pkg/sync"
 )
 
-// TestScheduler_StaticDelayShift is a regression guard for the
-// --static-delay-ms feature. With an unsynced ClockSync,
-// ServerToLocalTime returns time.Unix(0, serverTime*1000) deterministically,
-// which gives us an exact expected PlayAt we can check.
-//
-// For a 250ms static delay, a buffer whose timestamp would otherwise play
-// at local time T should actually play at T + 250ms.
+// TestScheduler_StaticDelayShift pins the unsynced path: with no sync
+// samples the scheduler cannot place server timestamps on the local clock
+// (monotonic-domain servers would map to 1970), so it paces by arrival —
+// PlayAt lands near now + bufferMs, shifted forward by the static delay.
 func TestScheduler_StaticDelayShift(t *testing.T) {
-	const serverTimestampUs = int64(1_000_000_000) // 1000 seconds, arbitrary
+	const serverTimestampUs = int64(861_714_428_096) // monotonic-domain value, like aiosendspin
 	const bufferMs = 200
 
 	cases := []struct {
@@ -36,20 +33,22 @@ func TestScheduler_StaticDelayShift(t *testing.T) {
 			sched := NewScheduler(cs, bufferMs, tc.staticDelayMs)
 			defer sched.Stop()
 
+			before := time.Now()
 			buf := audio.Buffer{Timestamp: serverTimestampUs}
 			sched.Schedule(buf)
+			after := time.Now()
 
 			// Schedule mutates a local copy; inspect the queue.
 			sched.bufferMu.Lock()
 			queued := sched.bufferQ.Peek()
 			sched.bufferMu.Unlock()
 
-			baseline := time.Unix(0, serverTimestampUs*1000)
-			want := baseline.Add(time.Duration(tc.staticDelayMs) * time.Millisecond)
+			lo := before.Add(time.Duration(bufferMs+tc.staticDelayMs) * time.Millisecond)
+			hi := after.Add(time.Duration(bufferMs+tc.staticDelayMs) * time.Millisecond)
 
-			if !queued.PlayAt.Equal(want) {
-				t.Errorf("PlayAt = %v, want %v (static delay = %dms)",
-					queued.PlayAt, want, tc.staticDelayMs)
+			if queued.PlayAt.Before(lo) || queued.PlayAt.After(hi) {
+				t.Errorf("PlayAt = %v, want within [%v, %v] (buffer %dms + delay %dms)",
+					queued.PlayAt, lo, hi, bufferMs, tc.staticDelayMs)
 			}
 		})
 	}

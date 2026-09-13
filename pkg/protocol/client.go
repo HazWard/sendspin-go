@@ -318,21 +318,15 @@ func (c *Client) handshake() error {
 
 	log.Printf("Handshake complete with server")
 
-	// Send initial state per spec (client/state with nested player object)
-	state := ClientStateMessage{
-		Player: &PlayerState{
-			State:  "synchronized",
-			Volume: 100,
-			Muted:  false,
-		},
-	}
-
-	stateMsg := Message{
+	// Initial state per spec: report unavailable until clock sync has
+	// converged. The Receiver posts available:true with the full player
+	// object once initial sync completes.
+	initialMsg := Message{
 		Type:    "client/state",
-		Payload: state,
+		Payload: ClientStateMessage{Available: false},
 	}
 
-	if err := c.sendJSON(stateMsg); err != nil {
+	if err := c.sendJSON(initialMsg); err != nil {
 		return fmt.Errorf("failed to send initial state: %w", err)
 	}
 
@@ -590,13 +584,22 @@ func derefString(s *string) string {
 	return *s
 }
 
-// SendState sends a client/state message per spec
+// SendState sends a client/state message per spec, marking the client
+// available with the given player object.
 func (c *Client) SendState(state PlayerState) error {
+	return c.SendClientState(ClientStateMessage{
+		Available: true,
+		Player:    &state,
+	})
+}
+
+// SendClientState sends a raw client/state message, for cases where the
+// caller must control availability itself (e.g. available:false when the
+// client cannot currently participate in playback).
+func (c *Client) SendClientState(state ClientStateMessage) error {
 	msg := Message{
-		Type: "client/state",
-		Payload: ClientStateMessage{
-			Player: &state,
-		},
+		Type:    "client/state",
+		Payload: state,
 	}
 	return c.sendJSON(msg)
 }
