@@ -1,16 +1,21 @@
-// ABOUTME: Opus audio decoder
-// ABOUTME: Decodes Opus audio to int32 samples
+// ABOUTME: Opus audio decoder (pure-Go pion/opus, RFC 6716)
+// ABOUTME: Decodes Opus audio to int32 samples on all builds
+
 package decode
 
 import (
 	"fmt"
 
+	"github.com/pion/opus"
+
 	"github.com/Sendspin/sendspin-go/pkg/audio"
-	"gopkg.in/hraban/opus.v2"
 )
 
+// OpusDecoder decodes Opus packets to int32 samples using a pure-Go
+// RFC 6716 implementation, with output semantics matching libopus:
+// int16 decode, left-justified into 24-bit range.
 type OpusDecoder struct {
-	decoder  *opus.Decoder
+	decoder  opus.Decoder
 	format   audio.Format
 	pcm16Buf []int16 // reusable decode buffer to avoid per-frame allocation
 }
@@ -20,7 +25,7 @@ func NewOpus(format audio.Format) (Decoder, error) {
 		return nil, fmt.Errorf("invalid codec for Opus decoder: %s", format.Codec)
 	}
 
-	dec, err := opus.NewDecoder(format.SampleRate, format.Channels)
+	dec, err := opus.NewDecoderWithOutput(format.SampleRate, format.Channels)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create opus decoder: %w", err)
 	}
@@ -34,7 +39,7 @@ func NewOpus(format audio.Format) (Decoder, error) {
 
 func (d *OpusDecoder) Decode(data []byte) ([]int32, error) {
 	// Reuse pre-allocated int16 buffer for decode (avoids 23KB alloc per frame)
-	n, err := d.decoder.Decode(data, d.pcm16Buf)
+	n, err := d.decoder.DecodeToInt16(data, d.pcm16Buf)
 	if err != nil {
 		return nil, fmt.Errorf("opus decode failed: %w", err)
 	}

@@ -1,3 +1,5 @@
+//go:build cgo
+
 // ABOUTME: Tests for the pure matchDevice selection logic used by Open
 package output
 

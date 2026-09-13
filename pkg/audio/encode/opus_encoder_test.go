@@ -1,3 +1,5 @@
+//go:build cgo
+
 // ABOUTME: Tests for Opus audio encoder
 // ABOUTME: Tests encoder creation, encoding, and format handling
 package encode

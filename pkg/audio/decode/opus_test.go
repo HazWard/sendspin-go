@@ -108,3 +108,28 @@ func TestOpusClose(t *testing.T) {
 		t.Errorf("expected Close to succeed, got error: %v", err)
 	}
 }
+
+func TestOpus_DecodePacket(t *testing.T) {
+	format := audio.Format{
+		Codec:      "opus",
+		Channels:   1,
+		SampleRate: 48000,
+		BitDepth:   16,
+	}
+	dec, err := NewOpus(format)
+	if err != nil {
+		t.Fatalf("NewOpus failed: %v", err)
+	}
+	defer func() { _ = dec.Close() }()
+
+	// Minimal CELT-only transition packet: exercises the real
+	// decode path (packet parse, synthesis, int16 conversion).
+	packet := []byte{0x80, 0xff, 0xff}
+	pcm, err := dec.Decode(packet)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	if len(pcm) == 0 || len(pcm)%format.Channels != 0 {
+		t.Fatalf("unexpected decode output length %d", len(pcm))
+	}
+}

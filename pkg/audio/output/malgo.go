@@ -1,3 +1,5 @@
+//go:build cgo
+
 // ABOUTME: Malgo-based audio output implementation with 24-bit support
 // ABOUTME: Uses miniaudio library via malgo for true hi-res audio playback
 package output

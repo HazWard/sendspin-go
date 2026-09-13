@@ -1,3 +1,5 @@
+//go:build cgo
+
 // ABOUTME: Tests for the pure capsFromFormats / formatBits helpers
 // ABOUTME: cgo-bound QueryDeviceCapabilities is not exercised here
 package output

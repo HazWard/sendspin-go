@@ -1,3 +1,5 @@
+//go:build cgo
+
 // ABOUTME: Opus audio encoder for bandwidth-efficient streaming
 // ABOUTME: Wraps libopus to encode PCM audio to Opus format
 package encode

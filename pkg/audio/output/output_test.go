@@ -1,3 +1,5 @@
+//go:build cgo
+
 // ABOUTME: Audio output interface tests
 // ABOUTME: Verifies Output interface implementation
 package output

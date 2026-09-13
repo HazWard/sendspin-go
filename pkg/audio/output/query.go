@@ -1,3 +1,5 @@
+//go:build cgo
+
 // ABOUTME: Capability probe for malgo playback devices (rate/bit-depth ceilings)
 // ABOUTME: Used by Player to filter advertised SupportedFormats before handshake
 package output
