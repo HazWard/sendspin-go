@@ -9,13 +9,12 @@ import (
 	"fmt"
 	"log"
 	"runtime"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
 	"github.com/Sendspin/sendspin-go/pkg/audio"
+	"github.com/Sendspin/sendspin-go/pkg/audio/output/backend"
 	"github.com/gen2brain/malgo"
 )
 
@@ -158,61 +157,26 @@ func ListPlaybackDevices() ([]PlaybackDevice, error) {
 	return out, nil
 }
 
-// matchDevice picks a PlaybackDevice from a list based on a requested name.
-//
-// Empty requested name -> the device with IsDefault set, else the first in
-// the list, else nil if the list is empty (caller falls back to whatever
-// miniaudio's default-config path does).
-//
-// Non-empty requested name -> exact Name match first, then short-name match
-// (the text before the first ", "). Miniaudio's Linux/ALSA backend builds
-// device names from snd_device_name_hint's DESC field, which follows a
-// "<card-short>, <stream-description>" convention, so users naturally try
-// just the short part. If the short-name match is ambiguous, we error out
-// instead of picking one silently.
-//
-// Fail-loud on no-match: the error lists every available device name, each
-// quoted with %q so embedded commas are distinguishable from the list
-// separator. Silent fallback to default is the behavior this feature
-// exists to correct.
-func matchDevice(devices []PlaybackDevice, requested string) (*PlaybackDevice, error) {
-	if requested == "" {
-		if len(devices) == 0 {
-			return nil, nil
-		}
-		for i := range devices {
-			if devices[i].IsDefault {
-				return &devices[i], nil
-			}
-		}
-		return &devices[0], nil
+// matchPlaybackDevice resolves a requested name against a malgo device
+// catalog using the shared backend.MatchDevice policy. PlaybackDevice
+// keeps the native malgo.DeviceID (needed to open the device), so this
+// projects names into backend.Device space for matching and maps the
+// result back by slice identity.
+func matchPlaybackDevice(devices []PlaybackDevice, requested string) (*PlaybackDevice, error) {
+	bdevs := make([]backend.Device, 0, len(devices))
+	for _, d := range devices {
+		bdevs = append(bdevs, backend.Device{Name: d.Name, IsDefault: d.IsDefault})
 	}
-	for i := range devices {
-		if devices[i].Name == requested {
+	m, err := backend.MatchDevice(bdevs, requested)
+	if err != nil || m == nil {
+		return nil, err
+	}
+	for i := range bdevs {
+		if &bdevs[i] == m {
 			return &devices[i], nil
 		}
 	}
-	var shortMatches []int
-	for i, d := range devices {
-		if idx := strings.Index(d.Name, ", "); idx > 0 && d.Name[:idx] == requested {
-			shortMatches = append(shortMatches, i)
-		}
-	}
-	if len(shortMatches) == 1 {
-		return &devices[shortMatches[0]], nil
-	}
-	if len(devices) == 0 {
-		return nil, fmt.Errorf("audio device %q not found (no playback devices available)", requested)
-	}
-	quoted := make([]string, len(devices))
-	for i, d := range devices {
-		quoted[i] = fmt.Sprintf("%q", d.Name)
-	}
-	sort.Strings(quoted)
-	if len(shortMatches) > 1 {
-		return nil, fmt.Errorf("audio device %q is ambiguous (matches %d devices by short name); use the full quoted name. Available: %s", requested, len(shortMatches), strings.Join(quoted, ", "))
-	}
-	return nil, fmt.Errorf("audio device %q not found; available: %s", requested, strings.Join(quoted, ", "))
+	return nil, fmt.Errorf("internal error: matched device vanished")
 }
 
 func (m *Malgo) Open(sampleRate, channels, bitDepth int) error {
@@ -292,7 +256,7 @@ func (m *Malgo) Open(sampleRate, channels, bitDepth int) error {
 			ID:        info.ID,
 		})
 	}
-	chosen, err := matchDevice(catalog, m.deviceName)
+	chosen, err := matchPlaybackDevice(catalog, m.deviceName)
 	if err != nil {
 		return err
 	}

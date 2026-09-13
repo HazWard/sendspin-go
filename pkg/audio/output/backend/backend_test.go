@@ -1,32 +1,26 @@
-//go:build cgo
+// ABOUTME: Tests for the shared backend.MatchDevice selection logic
+// ABOUTME: Ported from the malgo device matcher tests; runs without cgo
 
-// ABOUTME: Tests for the pure matchDevice selection logic used by Open
-package output
+package backend
 
 import (
 	"strings"
 	"testing"
-
-	"github.com/gen2brain/malgo"
 )
 
-// newDevice builds a PlaybackDevice with a unique sentinel ID so tests can
-// assert the correct entry was returned. The actual ID bytes are opaque to
-// miniaudio at this layer; we only check that matchDevice returns the right
-// slice element.
-func newDevice(name string, isDefault bool, marker byte) PlaybackDevice {
-	var id malgo.DeviceID
-	id[0] = marker
-	return PlaybackDevice{Name: name, IsDefault: isDefault, ID: id}
+// newDevice builds a Device with a unique sentinel ID so tests can
+// assert the correct entry was returned.
+func newDevice(name string, isDefault bool, id string) Device {
+	return Device{Name: name, IsDefault: isDefault, ID: id}
 }
 
 func TestMatchDevice_EmptyRequest(t *testing.T) {
 	tests := []struct {
-		name       string
-		devices    []PlaybackDevice
-		wantNil    bool
-		wantName   string
-		wantMarker byte
+		name     string
+		devices  []Device
+		wantNil  bool
+		wantName string
+		wantID   string
 	}{
 		{
 			name:    "empty catalog returns nil",
@@ -35,28 +29,28 @@ func TestMatchDevice_EmptyRequest(t *testing.T) {
 		},
 		{
 			name: "prefers the device flagged IsDefault",
-			devices: []PlaybackDevice{
-				newDevice("First", false, 0x01),
-				newDevice("DefaultSink", true, 0x02),
-				newDevice("Third", false, 0x03),
+			devices: []Device{
+				newDevice("First", false, "id-01"),
+				newDevice("DefaultSink", true, "id-02"),
+				newDevice("Third", false, "id-03"),
 			},
-			wantName:   "DefaultSink",
-			wantMarker: 0x02,
+			wantName: "DefaultSink",
+			wantID:   "id-02",
 		},
 		{
 			name: "falls back to first device when none flagged default",
-			devices: []PlaybackDevice{
-				newDevice("Alpha", false, 0x0A),
-				newDevice("Beta", false, 0x0B),
+			devices: []Device{
+				newDevice("Alpha", false, "id-0a"),
+				newDevice("Beta", false, "id-0b"),
 			},
-			wantName:   "Alpha",
-			wantMarker: 0x0A,
+			wantName: "Alpha",
+			wantID:   "id-0a",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := matchDevice(tt.devices, "")
+			got, err := MatchDevice(tt.devices, "")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -72,40 +66,40 @@ func TestMatchDevice_EmptyRequest(t *testing.T) {
 			if got.Name != tt.wantName {
 				t.Errorf("name = %q, want %q", got.Name, tt.wantName)
 			}
-			if got.ID[0] != tt.wantMarker {
-				t.Errorf("id[0] = 0x%x, want 0x%x (wrong slice element returned)", got.ID[0], tt.wantMarker)
+			if got.ID != tt.wantID {
+				t.Errorf("id = %q, want %q (wrong slice element returned)", got.ID, tt.wantID)
 			}
 		})
 	}
 }
 
 func TestMatchDevice_ExactNameMatch(t *testing.T) {
-	devices := []PlaybackDevice{
-		newDevice("HDA Intel PCH: ALC257 Analog", true, 0x10),
-		newDevice("HDMI 0", false, 0x11),
-		newDevice("USB Audio Device", false, 0x12),
+	devices := []Device{
+		newDevice("HDA Intel PCH: ALC257 Analog", true, "id-10"),
+		newDevice("HDMI 0", false, "id-11"),
+		newDevice("USB Audio Device", false, "id-12"),
 	}
 
-	got, err := matchDevice(devices, "USB Audio Device")
+	got, err := MatchDevice(devices, "USB Audio Device")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got == nil || got.Name != "USB Audio Device" {
 		t.Errorf("got %+v, want USB Audio Device", got)
 	}
-	if got.ID[0] != 0x12 {
-		t.Errorf("wrong device matched: id[0] = 0x%x, want 0x12", got.ID[0])
+	if got.ID != "id-12" {
+		t.Errorf("wrong device matched: id = %q, want id-12", got.ID)
 	}
 }
 
 func TestMatchDevice_NoMatchListsAvailable(t *testing.T) {
-	devices := []PlaybackDevice{
-		newDevice("Charlie", false, 0x01),
-		newDevice("Alpha", true, 0x02),
-		newDevice("Bravo", false, 0x03),
+	devices := []Device{
+		newDevice("Charlie", false, "id-01"),
+		newDevice("Alpha", true, "id-02"),
+		newDevice("Bravo", false, "id-03"),
 	}
 
-	got, err := matchDevice(devices, "DoesNotExist")
+	got, err := MatchDevice(devices, "DoesNotExist")
 	if got != nil {
 		t.Errorf("expected nil device, got %+v", got)
 	}
@@ -131,7 +125,7 @@ func TestMatchDevice_NoMatchListsAvailable(t *testing.T) {
 }
 
 func TestMatchDevice_NoMatchEmptyCatalogGivesDistinctError(t *testing.T) {
-	got, err := matchDevice(nil, "Anything")
+	got, err := MatchDevice(nil, "Anything")
 	if got != nil {
 		t.Errorf("expected nil device, got %+v", got)
 	}
@@ -149,27 +143,27 @@ func TestMatchDevice_NoMatchEmptyCatalogGivesDistinctError(t *testing.T) {
 // the short prefix should match unambiguously when only one device has that
 // prefix. Reproduces the HiFiBerry case from the field bug.
 func TestMatchDevice_ShortNameMatch(t *testing.T) {
-	devices := []PlaybackDevice{
-		newDevice("Default Audio Device", true, 0x01),
-		newDevice("vc4-hdmi-0, MAI PCM i2s-hifi-0", false, 0x02),
-		newDevice("vc4-hdmi-1, MAI PCM i2s-hifi-0", false, 0x03),
-		newDevice("PDP Audio Device, USB Audio", false, 0x04),
+	devices := []Device{
+		newDevice("Default Audio Device", true, "id-01"),
+		newDevice("vc4-hdmi-0, MAI PCM i2s-hifi-0", false, "id-02"),
+		newDevice("vc4-hdmi-1, MAI PCM i2s-hifi-0", false, "id-03"),
+		newDevice("PDP Audio Device, USB Audio", false, "id-04"),
 	}
 
-	got, err := matchDevice(devices, "vc4-hdmi-0")
+	got, err := MatchDevice(devices, "vc4-hdmi-0")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got == nil || got.ID[0] != 0x02 {
-		t.Errorf("short-name %q should resolve to id 0x02; got %+v", "vc4-hdmi-0", got)
+	if got == nil || got.ID != "id-02" {
+		t.Errorf("short-name %q should resolve to id-02; got %+v", "vc4-hdmi-0", got)
 	}
 
-	got, err = matchDevice(devices, "PDP Audio Device")
+	got, err = MatchDevice(devices, "PDP Audio Device")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got == nil || got.ID[0] != 0x04 {
-		t.Errorf("short-name %q should resolve to id 0x04; got %+v", "PDP Audio Device", got)
+	if got == nil || got.ID != "id-04" {
+		t.Errorf("short-name %q should resolve to id-04; got %+v", "PDP Audio Device", got)
 	}
 }
 
@@ -177,17 +171,17 @@ func TestMatchDevice_ShortNameMatch(t *testing.T) {
 // device's full name happens to equal someone else's short prefix, the
 // exact match takes priority over the short-name search.
 func TestMatchDevice_ExactNameWinsOverShortName(t *testing.T) {
-	devices := []PlaybackDevice{
-		newDevice("Foo, long description", false, 0x01),
-		newDevice("Foo", false, 0x02),
+	devices := []Device{
+		newDevice("Foo, long description", false, "id-01"),
+		newDevice("Foo", false, "id-02"),
 	}
 
-	got, err := matchDevice(devices, "Foo")
+	got, err := MatchDevice(devices, "Foo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got == nil || got.ID[0] != 0x02 {
-		t.Errorf("exact match should win: expected id 0x02; got %+v", got)
+	if got == nil || got.ID != "id-02" {
+		t.Errorf("exact match should win: expected id-02; got %+v", got)
 	}
 }
 
@@ -195,12 +189,12 @@ func TestMatchDevice_ExactNameWinsOverShortName(t *testing.T) {
 // case: the same short prefix matches multiple devices. We must not silently
 // pick one.
 func TestMatchDevice_ShortNameAmbiguousReturnsError(t *testing.T) {
-	devices := []PlaybackDevice{
-		newDevice("HiFiBerry, card 0", false, 0x01),
-		newDevice("HiFiBerry, card 1", false, 0x02),
+	devices := []Device{
+		newDevice("HiFiBerry, card 0", false, "id-01"),
+		newDevice("HiFiBerry, card 1", false, "id-02"),
 	}
 
-	got, err := matchDevice(devices, "HiFiBerry")
+	got, err := MatchDevice(devices, "HiFiBerry")
 	if got != nil {
 		t.Errorf("expected nil on ambiguous short-name match, got %+v", got)
 	}
@@ -219,11 +213,11 @@ func TestMatchDevice_ShortNameAmbiguousReturnsError(t *testing.T) {
 // TestMatchDevice_NoMatchQuotesNames ensures names with embedded commas are
 // distinguishable from the list separator in the error output.
 func TestMatchDevice_NoMatchQuotesNames(t *testing.T) {
-	devices := []PlaybackDevice{
-		newDevice("vc4-hdmi-0, MAI PCM i2s-hifi-0", false, 0x01),
+	devices := []Device{
+		newDevice("vc4-hdmi-0, MAI PCM i2s-hifi-0", false, "id-01"),
 	}
 
-	_, err := matchDevice(devices, "nonexistent")
+	_, err := MatchDevice(devices, "nonexistent")
 	if err == nil {
 		t.Fatal("expected an error")
 	}

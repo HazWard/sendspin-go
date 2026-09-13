@@ -49,7 +49,7 @@ func QueryDeviceCapabilities(deviceName string) (maxSampleRate, maxBitDepth int,
 		})
 	}
 
-	chosen, err := matchDevice(catalog, deviceName)
+	chosen, err := matchPlaybackDevice(catalog, deviceName)
 	if err != nil {
 		return 0, 0, err
 	}
