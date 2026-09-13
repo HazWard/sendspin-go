@@ -11,7 +11,7 @@ require (
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/hashicorp/mdns v1.0.6
 	github.com/mewkiz/flac v1.0.13
-	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
+	github.com/pion/opus v0.1.1-0.20260909212711-b8ebd659d671
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -33,7 +33,6 @@ require (
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
-	github.com/pion/opus v0.1.1-0.20260909212711-b8ebd659d671 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/mod v0.17.0 // indirect

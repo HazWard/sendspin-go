@@ -1,263 +1,99 @@
-//go:build cgo
+// ABOUTME: Tests for the Opus encoder
+// ABOUTME: Encode/decode roundtrip plus constructor validation
 
-// ABOUTME: Tests for Opus audio encoder
-// ABOUTME: Tests encoder creation, encoding, and format handling
 package encode
 
 import (
+	"math"
 	"testing"
+
+	"github.com/Sendspin/sendspin-go/pkg/audio"
+	"github.com/Sendspin/sendspin-go/pkg/audio/decode"
 )
 
-func TestNewOpusEncoder(t *testing.T) {
-	frameSize := 480 // 10ms at 48kHz
-	encoder, err := NewOpusEncoder(48000, 2, frameSize)
+func TestNewPionOpusEncoder(t *testing.T) {
+	enc, err := NewOpusEncoder(48000, 2, 960)
 	if err != nil {
-		t.Fatalf("failed to create encoder: %v", err)
+		t.Fatalf("NewOpusEncoder failed: %v", err)
 	}
-
-	if encoder == nil {
-		t.Fatal("expected encoder to be created")
-	}
-
-	if encoder.sampleRate != 48000 {
-		t.Errorf("expected sampleRate 48000, got %d", encoder.sampleRate)
-	}
-
-	if encoder.channels != 2 {
-		t.Errorf("expected channels 2, got %d", encoder.channels)
+	if err := enc.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
 	}
 }
 
-func TestOpusEncoderInvalidSampleRate(t *testing.T) {
-	// Opus only supports 8, 12, 16, 24, 48 kHz
-	_, err := NewOpusEncoder(44100, 2, 480)
-	if err == nil {
-		t.Fatal("expected error for invalid sample rate 44100")
+func TestNewPionOpusEncoder_RejectsNon48k(t *testing.T) {
+	if _, err := NewOpusEncoder(44100, 2, 960); err == nil {
+		t.Fatal("expected error for non-48k rate")
 	}
 }
 
-func TestOpusEncoderInvalidChannels(t *testing.T) {
-	// Opus supports 1-2 channels
-	_, err := NewOpusEncoder(48000, 5, 480)
-	if err == nil {
-		t.Fatal("expected error for invalid channels 5")
+func TestNewPionOpusEncoder_RejectsBadFrameSize(t *testing.T) {
+	if _, err := NewOpusEncoder(48000, 2, 480); err == nil {
+		t.Fatal("expected error for non-20ms frame size")
 	}
 }
 
-func TestOpusEncodeValidFrame(t *testing.T) {
-	encoder, err := NewOpusEncoder(48000, 2, 480)
+func TestPionOpusEncoder_Roundtrip(t *testing.T) {
+	enc, err := NewOpusEncoder(48000, 2, 960)
 	if err != nil {
-		t.Fatalf("failed to create encoder: %v", err)
+		t.Fatalf("NewOpusEncoder failed: %v", err)
+	}
+	defer func() { _ = enc.Close() }()
+
+	// 440 Hz sine, stereo interleaved, one 20 ms frame.
+	pcm := make([]int16, 960*2)
+	for i := 0; i < 960; i++ {
+		v := int16(20000 * math.Sin(2*math.Pi*440*float64(i)/48000))
+		pcm[i*2] = v
+		pcm[i*2+1] = v
 	}
 
-	// Opus at 48kHz expects frames of 2.5, 5, 10, 20, 40, or 60ms
-	// 10ms at 48kHz stereo = 480 samples * 2 channels = 960 int16 values
-	pcm := make([]int16, 960)
+	packet, err := enc.Encode(pcm)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+	if len(packet) == 0 {
+		t.Fatal("empty packet")
+	}
+	t.Logf("encoded 960 stereo samples into %d bytes", len(packet))
+
+	dec, err := decode.NewOpus(audio.Format{Codec: "opus", Channels: 2, SampleRate: 48000, BitDepth: 16})
+	if err != nil {
+		t.Fatalf("decoder setup failed: %v", err)
+	}
+	defer func() { _ = dec.Close() }()
+
+	out, err := dec.Decode(packet)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	if len(out) != 960*2 {
+		t.Fatalf("expected 1920 samples, got %d", len(out))
+	}
+
+	// Rough fidelity: decoded energy must be in the same ballpark
+	// as the input (guards against silent/garbage output).
+	var inE, outE float64
 	for i := range pcm {
-		pcm[i] = int16(i * 10) // Simple ramp signal
+		inE += float64(pcm[i]) * float64(pcm[i])
+		v := float64(out[i]) / 256.0 // int32 24-bit range back to int16 scale
+		outE += v * v
 	}
-
-	encoded, err := encoder.Encode(pcm)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-
-	if len(encoded) == 0 {
-		t.Fatal("expected non-empty encoded output")
-	}
-
-	// Opus encoding should compress the data
-	// Encoded size should be much smaller than PCM (960 samples * 2 bytes = 1920 bytes)
-	if len(encoded) >= len(pcm)*2 {
-		t.Errorf("expected compression, but encoded size %d >= PCM size %d", len(encoded), len(pcm)*2)
+	ratio := outE / inE
+	t.Logf("energy ratio out/in: %.3f", ratio)
+	if ratio < 0.25 || ratio > 4.0 {
+		t.Fatalf("decoded energy out of plausible range (ratio %.3f)", ratio)
 	}
 }
 
-func TestOpusEncodeSilence(t *testing.T) {
-	encoder, err := NewOpusEncoder(48000, 2, 480)
+func TestPionOpusEncoder_RejectsShortFrame(t *testing.T) {
+	enc, err := NewOpusEncoder(48000, 1, 960)
 	if err != nil {
-		t.Fatalf("failed to create encoder: %v", err)
+		t.Fatalf("NewOpusEncoder failed: %v", err)
 	}
+	defer func() { _ = enc.Close() }()
 
-	// All zeros (silence)
-	pcm := make([]int16, 960)
-
-	encoded, err := encoder.Encode(pcm)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-
-	if len(encoded) == 0 {
-		t.Fatal("expected non-empty encoded output even for silence")
-	}
-
-	// Silence should compress very well
-	if len(encoded) > 50 {
-		t.Logf("silence encoded to %d bytes (expected very small)", len(encoded))
-	}
-}
-
-func TestOpusEncodeFullScale(t *testing.T) {
-	encoder, err := NewOpusEncoder(48000, 2, 480)
-	if err != nil {
-		t.Fatalf("failed to create encoder: %v", err)
-	}
-
-	// Full scale signal (maximum amplitude)
-	pcm := make([]int16, 960)
-	for i := range pcm {
-		if i%2 == 0 {
-			pcm[i] = 32767 // Max positive
-		} else {
-			pcm[i] = -32768 // Max negative
-		}
-	}
-
-	encoded, err := encoder.Encode(pcm)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-
-	if len(encoded) == 0 {
-		t.Fatal("expected non-empty encoded output")
-	}
-}
-
-func TestOpusEncodeMultipleFrames(t *testing.T) {
-	encoder, err := NewOpusEncoder(48000, 2, 480)
-	if err != nil {
-		t.Fatalf("failed to create encoder: %v", err)
-	}
-
-	// Encode multiple frames in sequence
-	for frame := 0; frame < 10; frame++ {
-		pcm := make([]int16, 960)
-		for i := range pcm {
-			pcm[i] = int16((frame * 1000) + i)
-		}
-
-		encoded, err := encoder.Encode(pcm)
-		if err != nil {
-			t.Fatalf("encode frame %d failed: %v", frame, err)
-		}
-
-		if len(encoded) == 0 {
-			t.Fatalf("frame %d produced empty output", frame)
-		}
-	}
-}
-
-func TestOpusEncodeMono(t *testing.T) {
-	encoder, err := NewOpusEncoder(48000, 1, 480)
-	if err != nil {
-		t.Fatalf("failed to create mono encoder: %v", err)
-	}
-
-	// Mono: 480 samples for 10ms at 48kHz
-	pcm := make([]int16, 480)
-	for i := range pcm {
-		pcm[i] = int16(i * 20)
-	}
-
-	encoded, err := encoder.Encode(pcm)
-	if err != nil {
-		t.Fatalf("mono encode failed: %v", err)
-	}
-
-	if len(encoded) == 0 {
-		t.Fatal("expected non-empty encoded output for mono")
-	}
-}
-
-func TestOpusEncodeInvalidFrameSize(t *testing.T) {
-	encoder, err := NewOpusEncoder(48000, 2, 480)
-	if err != nil {
-		t.Fatalf("failed to create encoder: %v", err)
-	}
-
-	// Wrong frame size (not 2.5/5/10/20/40/60ms worth of samples)
-	pcm := make([]int16, 100) // Way too small
-
-	_, err = encoder.Encode(pcm)
-	if err == nil {
-		t.Log("Note: encoder may accept invalid frame sizes (implementation dependent)")
-	}
-}
-
-func TestOpusEncodeDifferentFrameSizes(t *testing.T) {
-	encoder, err := NewOpusEncoder(48000, 2, 480)
-	if err != nil {
-		t.Fatalf("failed to create encoder: %v", err)
-	}
-
-	// Test different valid frame sizes at 48kHz stereo
-	frameSizes := []int{
-		240,  // 2.5ms: 120 samples * 2 channels
-		480,  // 5ms: 240 samples * 2 channels
-		960,  // 10ms: 480 samples * 2 channels
-		1920, // 20ms: 960 samples * 2 channels
-	}
-
-	for _, size := range frameSizes {
-		pcm := make([]int16, size)
-		for i := range pcm {
-			pcm[i] = int16(i * 5)
-		}
-
-		encoded, err := encoder.Encode(pcm)
-		if err != nil {
-			t.Logf("frame size %d failed (may not be supported): %v", size, err)
-			continue
-		}
-
-		if len(encoded) == 0 {
-			t.Errorf("frame size %d produced empty output", size)
-		}
-	}
-}
-
-func TestOpusEncode24kHz(t *testing.T) {
-	// Test 24kHz (valid Opus sample rate)
-	encoder, err := NewOpusEncoder(24000, 2, 240)
-	if err != nil {
-		t.Fatalf("failed to create 24kHz encoder: %v", err)
-	}
-
-	// 10ms at 24kHz stereo = 240 samples * 2 channels = 480 values
-	pcm := make([]int16, 480)
-	for i := range pcm {
-		pcm[i] = int16(i * 10)
-	}
-
-	encoded, err := encoder.Encode(pcm)
-	if err != nil {
-		t.Fatalf("24kHz encode failed: %v", err)
-	}
-
-	if len(encoded) == 0 {
-		t.Fatal("expected non-empty encoded output at 24kHz")
-	}
-}
-
-func TestOpusEncode16kHz(t *testing.T) {
-	// Test 16kHz (valid Opus sample rate, narrowband)
-	encoder, err := NewOpusEncoder(16000, 1, 160)
-	if err != nil {
-		t.Fatalf("failed to create 16kHz encoder: %v", err)
-	}
-
-	// 10ms at 16kHz mono = 160 samples
-	pcm := make([]int16, 160)
-	for i := range pcm {
-		pcm[i] = int16(i * 10)
-	}
-
-	encoded, err := encoder.Encode(pcm)
-	if err != nil {
-		t.Fatalf("16kHz encode failed: %v", err)
-	}
-
-	if len(encoded) == 0 {
-		t.Fatal("expected non-empty encoded output at 16kHz")
+	if _, err := enc.Encode(make([]int16, 100)); err == nil {
+		t.Fatal("expected error for short frame")
 	}
 }
